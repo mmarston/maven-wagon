@@ -106,6 +106,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import static org.apache.maven.wagon.shared.http.HttpMessageUtils.formatAuthorizationMessage;
 import static org.apache.maven.wagon.shared.http.HttpMessageUtils.formatResourceDoesNotExistMessage;
@@ -126,7 +127,7 @@ public abstract class AbstractHttpClientWagon
 
         private final Wagon wagon;
 
-        private InputStream stream;
+        private Supplier<InputStream> streamSupplier;
 
         private File source;
 
@@ -134,20 +135,13 @@ public abstract class AbstractHttpClientWagon
 
         private boolean repeatable;
 
-        private WagonHttpEntity( final InputStream stream, final Resource resource, final Wagon wagon,
-                                             final File source )
+        private WagonHttpEntity( final Supplier<InputStream> streamSupplier, final Resource resource, final Wagon wagon,
+                                             final File source, boolean repeatable )
             throws TransferFailedException
         {
-            if ( source != null )
-            {
-                this.source = source;
-                this.repeatable = true;
-            }
-            else
-            {
-                this.stream = stream;
-                this.repeatable = false;
-            }
+            this.streamSupplier = streamSupplier;
+            this.source = source;
+            this.repeatable = repeatable;
             this.resource = resource;
             this.length = resource == null ? -1 : resource.getContentLength();
 
@@ -171,7 +165,7 @@ public abstract class AbstractHttpClientWagon
             {
                 return new FileInputStream( this.source );
             }
-            return stream;
+            return streamSupplier.get();
         }
 
         public File getSource()
@@ -202,7 +196,7 @@ public abstract class AbstractHttpClientWagon
 
             try ( ReadableByteChannel input = ( this.source != null )
                     ? new RandomAccessFile( this.source, "r" ).getChannel()
-                    : Channels.newChannel( stream ) )
+                    : Channels.newChannel( streamSupplier.get() ) )
             {
                 ByteBuffer buffer = ByteBuffer.allocate( getBufferCapacityForTransfer( this.length ) );
                 int halfBufferCapacity = buffer.capacity() / 2;
@@ -687,13 +681,11 @@ public abstract class AbstractHttpClientWagon
     {
         Resource resource = new Resource( resourceName );
 
-        firePutInitiated( resource, source );
-
         resource.setContentLength( source.length() );
 
         resource.setLastModified( source.lastModified() );
 
-        put( null, resource, source );
+        put( null, resource, source, true );
     }
 
     public void putFromStream( final InputStream stream, String destination, long contentLength, long lastModified )
@@ -701,19 +693,19 @@ public abstract class AbstractHttpClientWagon
     {
         Resource resource = new Resource( destination );
 
-        firePutInitiated( resource, null );
-
         resource.setContentLength( contentLength );
 
         resource.setLastModified( lastModified );
 
-        put( stream, resource, null );
+        put( () -> stream, resource, null, false );
     }
 
-    private void put( final InputStream stream, Resource resource, File source )
+    private void put( final Supplier<InputStream> streamSupplier, Resource resource, File source, boolean repeatable )
         throws TransferFailedException, AuthorizationException, ResourceDoesNotExistException
     {
-        put( resource, source, new WagonHttpEntity( stream, resource, this, source ) );
+        firePutInitiated( resource, source );
+
+        put( resource, source, new WagonHttpEntity( streamSupplier, resource, this, source, repeatable ) );
     }
 
     private void put( Resource resource, File source, HttpEntity httpEntity )
@@ -1280,7 +1272,14 @@ public abstract class AbstractHttpClientWagon
     protected void putFromStream( InputStream stream, Resource resource )
         throws TransferFailedException, AuthorizationException, ResourceDoesNotExistException
     {
-        putFromStream( stream, resource.getName(), -1, -1 );
+        put( () -> stream, resource, null, false );
+    }
+    
+    @Override
+    protected void putFromStream( Supplier<InputStream> streamSupplier, Resource resource )
+        throws TransferFailedException, AuthorizationException, ResourceDoesNotExistException
+    {
+        put( streamSupplier, resource, null, true );
     }
 
     public Properties getHttpHeaders()
